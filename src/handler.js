@@ -1,6 +1,6 @@
 import createError from 'http-errors';
 import { isbot } from 'isbot';
-import { formats } from './formats.js';
+import { formats, dataFiles } from './formats.js';
 import { openUrlStream } from './lookup.js';
 
 const tableFormats = ['csv', 'csv.gz', 'xlsx', 'ndjson'];
@@ -89,6 +89,7 @@ export function createHandler({ exporter, lookup, openStream = openUrlStream, bl
       if (!info.fileid) {
         throw createError(404, `No binary package available for ${pkgname}`);
       }
+      dataFiles(pkgname, name, info.lazydata, ds.file);
       stage = 'export';
       const controller = new AbortController();
       res.on('close', () => controller.abort());

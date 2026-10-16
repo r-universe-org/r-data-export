@@ -1,4 +1,7 @@
 import { fork } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import createError from 'http-errors';
 
 const childPath = new URL('./child.js', import.meta.url);
@@ -29,6 +32,10 @@ function setRef(child, ref) {
   }
 }
 
+function removeDir(dir) {
+  return fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
+}
+
 // Merge options with defaults, ignoring undefined values
 export function withDefaults(options) {
   const defined = Object.entries(options).filter(([, v]) => v !== undefined);
@@ -43,7 +50,11 @@ class Worker {
     this.job = null;
     this.exitReason = null;
     const { options } = pool;
+    // Directory to exchange files with the child, mounted in webR. We remove it
+    // when the child exits, also when we had to kill it.
+    this.dir = fs.mkdtempSync(path.join(os.tmpdir(), 'r-data-export-'));
     const config = {
+      dir: this.dir,
       memoryLimit: options.memoryLimitMB * 1024 * 1024,
       rVsizeMB: options.rVsizeMB,
       maxOutputBytes: options.maxOutputBytes
@@ -74,8 +85,11 @@ class Worker {
         if (!job || job.id !== msg.id) return;
         this.finishJob();
         if (msg.type === 'result') {
-          job.resolve(Buffer.from(msg.data.buffer, msg.data.byteOffset, msg.data.byteLength));
+          fs.promises.readFile(path.join(job.dir, 'output')).finally(() => removeDir(job.dir)).then(job.resolve, (err) => {
+            job.reject(createError(500, `Failed to read output for ${job.label}: ${err.message}`));
+          });
         } else {
+          removeDir(job.dir);
           // Regular R errors (e.g. data that is not a table) leave the session intact, and
           // they are common, so we keep the worker. After memory errors we start fresh.
           const status = /too large|memory|cannot allocate/i.test(msg.message) ? 413 : 422;
@@ -98,6 +112,7 @@ class Worker {
     const wasStarting = this.state === 'starting';
     this.state = 'dead';
     this.pool.remove(this);
+    removeDir(this.dir);
     if (this.job) {
       const job = this.job;
       this.job = null;
@@ -118,7 +133,19 @@ class Worker {
     clearTimeout(this.timer);
     setRef(this.child, true);
     this.timer = setTimeout(() => this.kill('timeout'), this.pool.options.jobTimeout);
-    this.child.send({ type: 'job', id: job.id, files: job.files, dataset: job.dataset, format: job.format });
+    job.dir = path.join(this.dir, `job${job.id}`);
+    fs.promises.mkdir(job.dir).then(() => Promise.all(job.files.map((file) => {
+      return fs.promises.writeFile(path.join(job.dir, file.name), file.data);
+    }))).then(() => {
+      if (this.job !== job) return; // killed in the meantime
+      const files = job.files.map(x => x.name);
+      this.child.send({ type: 'job', id: job.id, files, dataset: job.dataset, format: job.format });
+    }, (err) => {
+      if (this.job !== job) return;
+      this.finishJob();
+      removeDir(job.dir);
+      job.reject(createError(500, `Failed to write input for ${job.label}: ${err.message}`));
+    });
   }
 
   finishJob() {
@@ -286,8 +313,10 @@ export class ExportPool {
     for (const job of this.queue.splice(0)) {
       job.reject(createError(503, 'Data export server is shutting down'));
     }
-    for (const worker of this.workers) {
+    // Remove temp dirs synchronously, the process may exit before exit handlers run
+    for (const worker of [...this.workers]) {
       worker.retire('shutdown');
+      fs.rmSync(worker.dir, { recursive: true, force: true });
     }
   }
 }

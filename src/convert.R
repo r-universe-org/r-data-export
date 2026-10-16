@@ -40,6 +40,14 @@ as_table <- function(df){
   stop(sprintf("Cannot export object of class '%s' to a table", paste(class(df), collapse = "/")))
 }
 
+# Excel cells hold at most 32767 characters, Excel itself also truncates longer strings
+truncate_strings <- function(df, max = 32767){
+  df[] <- lapply(df, function(x){
+    if(is.character(x)) substr(x, 1, max) else x
+  })
+  df
+}
+
 save_data <- function(name, env, format, output){
   df <- get(name, envir = env, inherits = FALSE)
   # Resolve lazyload promise so errors happen here and not in the writer
@@ -47,7 +55,7 @@ save_data <- function(name, env, format, output){
   switch(format,
          csv = data.table::fwrite(as_table(df), output),
          csv.gz = data.table::fwrite(as_table(df), output, compress = 'gzip'),
-         xlsx = writexl::write_xlsx(as.data.frame(as_table(df)), output),
+         xlsx = writexl::write_xlsx(truncate_strings(as.data.frame(as_table(df))), output),
          json = jsonlite::write_json(df, output, force = TRUE),
          ndjson = jsonlite::stream_out(as.data.frame(as_table(df)), file(output), force = TRUE, verbose = FALSE),
          rds = saveRDS(df, output),

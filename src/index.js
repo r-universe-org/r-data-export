@@ -1,23 +1,12 @@
 import createError from 'http-errors';
 import { ExportPool, withDefaults } from './pool.js';
 import { extractFiles } from './extract.js';
-import { formats } from './formats.js';
+import { formats, dataFiles } from './formats.js';
 
 export { ExportPool, extractFiles, formats };
 export { createHandler, availableFormats } from './handler.js';
 export { apiLookup, fromPackageInfo, openUrlStream } from './lookup.js';
 export { createErrorLog } from './errorlog.js';
-
-// Files to extract from the installed (binary) package for this dataset
-function dataFiles(pkg, dataset, lazydata, file) {
-  if (lazydata) {
-    return ['Rdata.rdb', 'Rdata.rdx'];
-  }
-  if (file && !/\.R$/i.test(file)) {
-    return [file];
-  }
-  throw createError(400, `Unable to export dataset "${dataset}" from ${pkg}`);
-}
 
 /**
  * Create a data exporter backed by a pool of webR child processes.

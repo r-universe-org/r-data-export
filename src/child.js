@@ -1,6 +1,9 @@
 // Child process that hosts a single webR instance, see pool.js. Everything that
 // can go wrong with R (OOM, infinite loops, wasm traps) stays inside this process,
 // the parent kills and replaces it when needed.
+// Input and output files are exchanged via a host directory that the parent
+// manages, which we mount in webR. This avoids copying large files through
+// messages and keeping them in the wasm heap.
 import fs from 'node:fs';
 import { WebR } from '@r-universe/webr';
 
@@ -31,6 +34,8 @@ function startWatchdog() {
 async function init() {
   webR = new WebR({ interactive: false });
   await webR.init();
+  await webR.FS.mkdir('/host');
+  await webR.FS.mount('NODEFS', { root: config.dir }, '/host');
   await webR.evalRVoid(`
     datatool <- new.env(parent = baseenv())
     eval(parse(text = rcode), envir = datatool)
@@ -44,28 +49,22 @@ async function init() {
 }
 
 async function runJob({ id, files, dataset, format }) {
-  const dir = `/tmp/job${id}`;
+  const dir = `/host/job${id}`;
   try {
-    await webR.FS.mkdir(dir);
-    let input;
-    for (const file of files) {
-      input = `${dir}/${file.name}`;
-      await webR.FS.writeFile(input, file.data);
-    }
+    // For lazyload databases the last file is Rdata.rdx
+    const input = `${dir}/${files[files.length - 1]}`;
     const output = `${dir}/output`;
     const size = await webR.evalRNumber(`.datatool$convert(input, name, format, output)`,
       { env: { input, name: dataset, format, output } });
     if (size > config.maxOutputBytes) {
       throw new Error(`Output is too large (${Math.round(size / 1e6)}MB)`);
     }
-    const data = await webR.FS.readFile(output);
-    send({ type: 'result', id, data });
+    send({ type: 'result', id, size });
   } catch (err) {
     send({ type: 'error', id, message: errorMessage(err) });
   } finally {
-    // If cleanup fails the R session is broken, let the parent replace us
-    await webR.evalRVoid(`unlink(dir, recursive = TRUE); invisible(gc())`, { env: { dir } })
-      .catch(() => process.exit(71));
+    // If this fails the R session is broken, let the parent replace us
+    await webR.evalRVoid(`invisible(gc())`).catch(() => process.exit(71));
   }
 }
 
