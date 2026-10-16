@@ -325,6 +325,16 @@ test('xlsx converts list columns and other unsupported types to text', async () 
   }
 });
 
+test('xlsx repairs invalid UTF-8 strings', async () => {
+  const exporter = createExporter({ workers: 1, ...quiet });
+  try {
+    const out = await exporter.convert({ files: input('badutf8.rda'), dataset: 'badutf8', format: 'xlsx' });
+    assert.equal(out.subarray(0, 2).toString(), 'PK');
+  } finally {
+    exporter.close();
+  }
+});
+
 test('datasets from R scripts are rejected before exporting', async () => {
   const errors = [];
   const handler = createHandler({

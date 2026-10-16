@@ -51,9 +51,18 @@ xlsx_table <- function(df, max = 32767){
     } else if(!(is.character(x) || is.integer(x) || is.double(x) || is.logical(x))){
       x <- as.character(x)
     }
-    if(is.character(x)) substr(x, 1, max) else x
+    if(is.character(x)) substr(fix_utf8(x), 1, max) else x
   })
   df
+}
+
+# xlsx requires valid UTF-8, but some packages have latin1 strings that are marked
+# as UTF-8, e.g. "S\xe9zary" in ICD10gm. Assume latin1, which never fails to convert.
+fix_utf8 <- function(x){
+  bad <- !is.na(x) & !validUTF8(x)
+  if(any(bad))
+    x[bad] <- iconv(x[bad], "latin1", "UTF-8")
+  x
 }
 
 cell_to_string <- function(x){
