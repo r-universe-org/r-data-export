@@ -1,4 +1,4 @@
-FROM node:24-alpine
+FROM node:26-alpine
 
 # tini forwards signals and reaps the webR child processes
 RUN apk add --no-cache tini

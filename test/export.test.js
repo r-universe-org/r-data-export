@@ -6,7 +6,7 @@ import { createGzip } from 'node:zlib';
 import tar from 'tar-stream';
 import os from 'node:os';
 import path from 'node:path';
-import { createExporter, createHandler, createErrorLog, extractFiles } from '../src/index.js';
+import { createExporter, createHandler, createErrorLog, extractFiles, openUrlStream } from '../src/index.js';
 
 const fixture = (name) => fs.readFileSync(new URL(`./fixtures/${name}`, import.meta.url));
 const quiet = { log: () => {} };
@@ -197,6 +197,48 @@ test('download errors are reported as 502/504', async () => {
     assert.equal(exporter.status().admitted, 0);
   } finally {
     exporter.close();
+  }
+});
+
+test('openUrlStream downloads, follows redirects, and times out', async () => {
+  const body = Buffer.alloc(1e6, 'x');
+  const server = http.createServer((req, res) => {
+    if (req.url === '/file') return res.end(body);
+    if (req.url === '/redirect') { res.statusCode = 302; res.setHeader('Location', '/file'); return res.end(); }
+    if (req.url === '/stall') { res.write('partial'); return; } // never ends
+    res.statusCode = 404; res.end();
+  });
+  await new Promise(resolve => server.listen(0, resolve));
+  const base = `http://localhost:${server.address().port}`;
+  const read = async (stream) => { const chunks = []; for await (const c of stream) chunks.push(c); return Buffer.concat(chunks); };
+  try {
+    assert.equal((await read(await openUrlStream(`${base}/file`))).length, 1e6);
+    assert.equal((await read(await openUrlStream(`${base}/redirect`))).length, 1e6);
+    await assert.rejects(openUrlStream(`${base}/missing`), { status: 502, message: /HTTP 404/ });
+    await assert.rejects(read(await openUrlStream(`${base}/stall`, { timeout: 200 })), { name: 'TimeoutError' });
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
+});
+
+test('extractFiles stops downloading early without errors', async () => {
+  // Serve a tarball where the wanted file comes first, followed by a lot of padding
+  const pack = tar.pack();
+  pack.entry({ name: 'testpkg/data/small.rda' }, fixture('small.rda'));
+  pack.entry({ name: 'testpkg/padding.bin' }, Buffer.alloc(20e6));
+  pack.finalize();
+  const chunks = []; for await (const c of pack.pipe(createGzip({ level: 0 }))) chunks.push(c);
+  const tgz = Buffer.concat(chunks);
+  const server = http.createServer((req, res) => res.end(tgz));
+  await new Promise(resolve => server.listen(0, resolve));
+  try {
+    const stream = await openUrlStream(`http://localhost:${server.address().port}/`);
+    const [buf] = await extractFiles(stream, ['testpkg/data/small.rda']);
+    assert.deepEqual(buf, fixture('small.rda'));
+  } finally {
+    server.closeAllConnections();
+    server.close();
   }
 });
 

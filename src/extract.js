@@ -49,7 +49,9 @@ export function extractFiles(input, files, maxBytes = 100e6) {
   }
   const extract = tar.extract({ allowUnknownFormat: true }).on('entry', processEntry);
   return pipeline(input, createGunzip({ chunkSize: 64 * 1024 }), extract, { signal: controller.signal }).catch((err) => {
-    if (err.name !== 'AbortError') throw err;
+    // When we stop reading early, the source may raise its own error, e.g. an http
+    // response reports 'aborted'. Only errors that happened before that are real.
+    if (!controller.signal.aborted) throw err;
   }).then(() => {
     if (failure) throw failure;
     const missing = files.filter((x, i) => !output[i] || !output[i].length);
