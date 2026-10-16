@@ -58,14 +58,27 @@ start when needed and stop when idle, but if that is too much, use the standalon
 ## Standalone server
 
 A minimal drop-in replacement for cranlike-server that needs no database. It looks
-up package info from the frontend json api, and downloads the binary from R2:
+up package info from the frontend json api, and downloads the binary from R2.
+It serves `/:universe/:package/data/:name/:format`, which matches the current nginx
+config (`proxy_pass http://cransrv2/$universe$request_uri`), and `/status` for
+monitoring and the docker healthcheck.
 
-```sh
-PORT=3000 npx r-data-export
+The docker image `ghcr.io/r-universe-org/r-data-export` is built on every push to
+main. To swap it in for cranlike-server in docker-compose:
+
+```yaml
+  cranlike2:
+    image: ghcr.io/r-universe-org/r-data-export:latest
+    restart: always
+    container_name: cranlike2
+    mem_limit: 8g
+    environment:
+      UNIVERSE_API: http://frontend:3000
+      DATA_EXPORT_WORKERS: 3
+      PRELOAD_WEBR: true
 ```
 
-It serves `/:universe/:package/data/:name/:format`, which matches the current nginx
-config (`proxy_pass http://cransrv2/$universe$request_uri`), and `/status` for monitoring.
+Or run it locally with `npm start`.
 
 | Environment variable        | Default                           |
 |-----------------------------|-----------------------------------|
@@ -76,6 +89,15 @@ config (`proxy_pass http://cransrv2/$universe$request_uri`), and `/status` for m
 | `DATA_EXPORT_JOB_TIMEOUT`   | `60000` (ms)                      |
 | `DATA_EXPORT_MEMORY_LIMIT`  | `2048` (MB per worker)            |
 | `PRELOAD_WEBR`              | start workers at boot             |
+
+If `UNIVERSE_API` contains `{universe}` it is substituted in the url. Otherwise
+requests go to that url with a `Host: {universe}.r-universe.dev` header, so with
+`http://frontend:3000` it talks to the frontend container directly instead of
+going through Cloudflare.
+
+Keep `mem_limit` above `DATA_EXPORT_WORKERS * DATA_EXPORT_MEMORY_LIMIT` (plus a
+bit for the server itself), so that the per-worker watchdog kicks in before docker
+kills the entire container.
 
 ## Options
 

@@ -1,3 +1,5 @@
+import http from 'node:http';
+import https from 'node:https';
 import { Readable } from 'node:stream';
 import createError from 'http-errors';
 
@@ -30,20 +32,50 @@ export function fromPackageInfo(info) {
   };
 }
 
+// Unlike fetch(), node:http lets us set the Host header, which the frontend
+// uses to determine the universe.
+function getJson(url, headers) {
+  const lib = url.startsWith('https:') ? https : http;
+  return new Promise((resolve, reject) => {
+    const req = lib.get(url, { headers, timeout: 30000 }, (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('error', reject);
+      res.on('end', () => {
+        if (res.statusCode === 404) {
+          return reject(createError(404, 'Package not found'));
+        }
+        if (res.statusCode !== 200) {
+          return reject(createError(502, `HTTP ${res.statusCode} for: ${url}`));
+        }
+        try {
+          resolve(JSON.parse(Buffer.concat(chunks)));
+        } catch (err) {
+          reject(createError(502, `Invalid json from: ${url}`));
+        }
+      });
+    });
+    req.on('timeout', () => req.destroy(createError(504, `Timeout for: ${url}`)));
+    req.on('error', reject);
+  });
+}
+
 /**
- * Lookup function based on the public r-universe json api.
- * baseUrl may contain {universe}, e.g. 'https://{universe}.r-universe.dev'
+ * Lookup function based on the r-universe json api. If baseUrl contains {universe}
+ * it gets substituted, e.g. 'https://{universe}.r-universe.dev'. Otherwise we request
+ * baseUrl with a 'Host: {universe}.r-universe.dev' header, e.g. 'http://frontend:3000'
+ * to talk to the frontend container directly.
  */
 export function apiLookup(baseUrl = 'https://{universe}.r-universe.dev') {
   return async function lookup(universe, pkg) {
-    const url = `${baseUrl.replace('{universe}', universe)}/api/packages/${encodeURIComponent(pkg)}`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
-    if (res.status === 404) {
-      throw createError(404, `Package ${pkg} not found in ${universe}`);
-    }
-    if (!res.ok) {
-      throw createError(502, `HTTP ${res.status} for: ${url}`);
-    }
-    return fromPackageInfo(await res.json());
+    const path = `/api/packages/${encodeURIComponent(pkg)}`;
+    const hasTemplate = baseUrl.includes('{universe}');
+    const url = `${baseUrl.replace('{universe}', universe).replace(/\/$/, '')}${path}`;
+    const headers = hasTemplate ? {} : { Host: `${universe}.r-universe.dev` };
+    const info = await getJson(url, headers).catch((err) => {
+      if (err.status === 404) err.message = `Package ${pkg} not found in ${universe}`;
+      throw err;
+    });
+    return fromPackageInfo(info);
   };
 }
