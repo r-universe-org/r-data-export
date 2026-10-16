@@ -28,11 +28,15 @@ load_data_env <- function(filename, name){
   env
 }
 
+# Data frames, matrices and lists with equal-length columns can be written as a table.
+# Lists are passed to fwrite as-is, like the 'table' check in the package build.
 as_table <- function(df){
   if(is.data.frame(df))
     return(df)
   if(is.matrix(df) || is.table(df))
     return(as.data.frame(df))
+  if(is.list(df) && !is.object(df))
+    return(df)
   stop(sprintf("Cannot export object of class '%s' to a table", paste(class(df), collapse = "/")))
 }
 
@@ -43,9 +47,9 @@ save_data <- function(name, env, format, output){
   switch(format,
          csv = data.table::fwrite(as_table(df), output),
          csv.gz = data.table::fwrite(as_table(df), output, compress = 'gzip'),
-         xlsx = writexl::write_xlsx(as_table(df), output),
+         xlsx = writexl::write_xlsx(as.data.frame(as_table(df)), output),
          json = jsonlite::write_json(df, output, force = TRUE),
-         ndjson = jsonlite::stream_out(as_table(df), file(output), force = TRUE, verbose = FALSE),
+         ndjson = jsonlite::stream_out(as.data.frame(as_table(df)), file(output), force = TRUE, verbose = FALSE),
          rds = saveRDS(df, output),
          rda = save(list = name, envir = env, file = output),
          stop("Unsupported format: ", format)

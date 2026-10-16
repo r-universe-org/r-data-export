@@ -3,6 +3,7 @@
 // /:universe/:package/data/... here, package info is looked up via the frontend json api.
 import http from 'node:http';
 import { createExporter, createHandler, apiLookup } from '../src/index.js';
+import { createErrorLog } from '../src/errorlog.js';
 
 const env = process.env;
 const num = (x) => x === undefined ? undefined : Number(x);
@@ -14,13 +15,20 @@ const exporter = createExporter({
   memoryLimitMB: num(env.DATA_EXPORT_MEMORY_LIMIT)
 });
 const lookup = apiLookup(env.UNIVERSE_API || 'https://{universe}.r-universe.dev');
-const handler = createHandler({ exporter, lookup });
+const errors = createErrorLog({ file: env.DATA_EXPORT_ERROR_LOG });
+const handler = createHandler({ exporter, lookup, onError: errors.add });
 
 const server = http.createServer(function(req, res) {
   const path = req.url.replace(/[?#].*/, '');
   if (path === '/status') {
     res.setHeader('Content-Type', 'application/json');
     return res.end(JSON.stringify(exporter.status()));
+  }
+  // Recent failures, use /errors?stage=export for the ones worth investigating
+  if (path === '/errors') {
+    const stage = new URL(req.url, 'http://localhost').searchParams.get('stage');
+    res.setHeader('Content-Type', 'application/json');
+    return res.end(JSON.stringify(errors.summary(stage), null, 2));
   }
   if (req.method !== 'GET' && req.method !== 'HEAD') {
     res.statusCode = 405;

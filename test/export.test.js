@@ -4,7 +4,9 @@ import fs from 'node:fs';
 import http from 'node:http';
 import { createGzip } from 'node:zlib';
 import tar from 'tar-stream';
-import { createExporter, createHandler, extractFiles } from '../src/index.js';
+import os from 'node:os';
+import path from 'node:path';
+import { createExporter, createHandler, createErrorLog, extractFiles } from '../src/index.js';
 
 const fixture = (name) => fs.readFileSync(new URL(`./fixtures/${name}`, import.meta.url));
 const quiet = { log: () => {} };
@@ -51,7 +53,7 @@ test('R errors are reported and the worker is kept', async () => {
   const exporter = createExporter({ workers: 1, ...quiet });
   try {
     await assert.rejects(exporter.convert({ files: input('notdf.rda'), dataset: 'notdf', format: 'csv' }),
-      { status: 422, message: /Cannot export object of class 'list'/ });
+      { status: 422, message: /Failed to convert notdf/ });
     const pid = exporter.status().workers[0].pid;
     await assert.rejects(exporter.convert({ files: input('small.rda'), dataset: 'wrong', format: 'csv' }),
       { status: 422, message: /not found/ });
@@ -157,6 +159,21 @@ test('identical concurrent requests share a single conversion', async () => {
   }
 });
 
+test('download errors are reported as 502/504', async () => {
+  const exporter = createExporter({ workers: 1, ...quiet });
+  const args = { package: 'testpkg', dataset: 'small', format: 'csv', file: 'small.rda' };
+  try {
+    await assert.rejects(exporter.exportDataset({ ...args, getStream: () => { throw new Error('connection reset'); } }),
+      { status: 502, message: /Failed to download testpkg package: connection reset/ });
+    const timeout = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+    await assert.rejects(exporter.exportDataset({ ...args, getStream: async () => { throw timeout; } }),
+      { status: 504 });
+    assert.equal(exporter.status().admitted, 0);
+  } finally {
+    exporter.close();
+  }
+});
+
 test('extractFiles limits', async () => {
   await assert.rejects(extractFiles(tarball('testpkg', ['small.rda']), ['testpkg/data/other.rda']),
     { status: 404 });
@@ -166,12 +183,19 @@ test('extractFiles limits', async () => {
 
 test('http handler', async () => {
   const exporter = createExporter({ workers: 1, ...quiet });
+  const errors = [];
   const handler = createHandler({
     exporter,
     lookup: async (universe, pkg) => ({
-      package: pkg, lazydata: true, fileid: 'abc', datasets: [{ name: 'cars2' }]
+      package: pkg, lazydata: true, fileid: 'abc', datasets: [
+        { name: 'cars2' },
+        { name: 'list2', class: ['list'], table: false, tojson: true },
+        { name: 'model2', class: ['lm'], table: false, tojson: false },
+        { name: 'missing', class: ['data.frame'], table: true, tojson: true }
+      ]
     }),
-    openStream: async () => tarball('testpkg', ['Rdata.rdb', 'Rdata.rdx'])
+    openStream: async () => tarball('testpkg', ['Rdata.rdb', 'Rdata.rdx']),
+    onError: (entry) => errors.push(entry)
   });
   const server = http.createServer((req, res) => {
     const [, pkg, , name, format] = req.url.split('/');
@@ -186,18 +210,67 @@ test('http handler', async () => {
     assert.equal(res.status, 200);
     assert.equal(res.headers.get('content-disposition'), 'attachment; filename="cars2.xlsx"');
     assert.equal(res.headers.get('cache-control'), 'public, max-age=3600');
-    res = await fetch(`${base}/testpkg/data/cars2`, { headers, redirect: 'manual' });
-    assert.equal(res.status, 302);
-    assert.equal(res.headers.get('location'), '/testpkg/data/cars2/csv');
+    res = await fetch(`${base}/testpkg/data/cars2/csv`, { headers: { 'user-agent': 'curl/8.7.1' } });
+    assert.equal(res.status, 200);
+
+    // Redirect to a format that works for this dataset
+    for (const [name, format] of [['cars2', 'csv'], ['list2', 'json'], ['model2', 'rda']]) {
+      res = await fetch(`${base}/testpkg/data/${name}`, { headers, redirect: 'manual' });
+      assert.equal(res.status, 302);
+      assert.equal(res.headers.get('location'), `/testpkg/data/${name}/${format}`);
+    }
+
+    // Formats that failed in the package build are rejected without running R
+    res = await fetch(`${base}/testpkg/data/list2/csv`, { headers });
+    assert.equal(res.status, 422);
+    assert.match(await res.text(), /type 'list' cannot be exported to csv. Available formats: json, rds, rda/);
+    res = await fetch(`${base}/testpkg/data/model2/json`, { headers });
+    assert.equal(res.status, 422);
+
     res = await fetch(`${base}/testpkg/data/nope/csv`, { headers });
     assert.equal(res.status, 404);
     res = await fetch(`${base}/testpkg/data/cars2/exe`, { headers });
     assert.equal(res.status, 400);
-    res = await fetch(`${base}/testpkg/data/cars2/csv`, { headers: { 'user-agent': 'curl/8.7.1' } });
-    assert.equal(res.status, 200);
+
+    // Passes the checks but fails in R
+    res = await fetch(`${base}/testpkg/data/missing/csv`, { headers });
+    assert.equal(res.status, 422);
+
+    assert.deepEqual(errors.map(x => [x.stage, x.status, x.dataset, x.format]), [
+      ['request', 422, 'list2', 'csv'],
+      ['request', 422, 'model2', 'json'],
+      ['request', 404, 'nope', 'csv'],
+      ['request', 400, 'cars2', 'exe'],
+      ['export', 422, 'missing', 'csv']
+    ]);
+    assert.equal(errors[4].universe, 'test');
+    assert.match(errors[4].message, /Dataset 'missing' not found/);
+    assert.equal(exporter.status().completed, 2);
   } finally {
     server.close();
     exporter.close();
+  }
+});
+
+test('error log keeps recent errors and writes rotated json lines', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'errorlog-'));
+  const file = path.join(dir, 'errors.jsonl');
+  const log = console.log;
+  console.log = () => {};
+  try {
+    const errors = createErrorLog({ file, maxEntries: 3, maxFileBytes: 700 });
+    for (let i = 0; i < 5; i++) {
+      errors.add({ status: 422, stage: i % 2 ? 'export' : 'request', universe: 'u', package: 'p', dataset: `d${i}`, format: 'csv', message: 'x'.repeat(100) });
+    }
+    const all = errors.summary();
+    assert.deepEqual(all.counts, { 'request 422': 3, 'export 422': 2 });
+    assert.deepEqual(all.recent.map(x => x.dataset), ['d4', 'd3', 'd2']);
+    assert.deepEqual(errors.summary('export').recent.map(x => x.dataset), ['d3']);
+    const lines = (f) => fs.readFileSync(f, 'utf8').trim().split('\n').map(x => JSON.parse(x).dataset);
+    assert.deepEqual([...lines(`${file}.1`), ...lines(file)], ['d0', 'd1', 'd2', 'd3', 'd4']);
+  } finally {
+    console.log = log;
+    fs.rmSync(dir, { recursive: true });
   }
 });
 

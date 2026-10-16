@@ -13,7 +13,7 @@ export const defaults = {
   rVsizeMB: 1000,          // R vector heap limit, R errors when exceeded (see ?mem.maxVSize)
   maxJobsPerWorker: 100,   // recycle workers after this many jobs
   idleTimeout: 600000,     // stop idle workers after this long (0 = never)
-  maxInputBytes: 100e6,    // fail when data files in the package are larger
+  maxInputBytes: 250e6,    // fail when data files in the package are larger (Rdata.rdb has all datasets)
   maxOutputBytes: 200e6,   // fail conversions that produce larger output
   log: (msg) => console.log(`[R-DATA-EXPORT] ${msg}`)
 };

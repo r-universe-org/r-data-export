@@ -3,8 +3,9 @@ import https from 'node:https';
 import { Readable } from 'node:stream';
 import createError from 'http-errors';
 
+// The timeout includes reading the body, it is only there to catch stalled downloads
 export async function openUrlStream(url) {
-  const res = await fetch(url, { signal: AbortSignal.timeout(60000) });
+  const res = await fetch(url, { signal: AbortSignal.timeout(120000) });
   if (!res.ok) {
     throw createError(502, `HTTP ${res.status} for: ${url}`);
   }

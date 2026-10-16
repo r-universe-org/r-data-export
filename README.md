@@ -26,6 +26,10 @@ R/webR can run out of memory, hang, or crash on arbitrary package data. So:
  - Workers get recycled after an error, after `maxJobsPerWorker` jobs, and stop
    after `idleTimeout` of inactivity (they start on demand in ~1 sec).
  - Identical concurrent requests share a single conversion.
+ - The package build already records if a dataset can be converted to a table
+   (`table`) or json (`tojson`). Requests for formats that failed there are rejected
+   without starting R, and `/:package/data/:name` without a format redirects to
+   the first available of csv, json or rda.
 
 Unlike the old server, all workers are identical (they preload jsonlite, data.table
 and writexl) instead of having a pool per output format.
@@ -60,8 +64,8 @@ start when needed and stop when idle, but if that is too much, use the standalon
 
 A minimal drop-in replacement for cranlike-server that needs no database. It looks
 up package info from the frontend json api, and downloads the binary from R2.
-It serves `/:universe/:package/data/:name/:format` and `/status` for monitoring and
-the docker healthcheck.
+It serves `/:universe/:package/data/:name/:format`, `/status` for monitoring and
+the docker healthcheck, and `/errors` (see below).
 
 The docker image `ghcr.io/r-universe-org/r-data-export` is built on every push to
 main. In docker-compose:
@@ -71,11 +75,14 @@ main. In docker-compose:
     image: ghcr.io/r-universe-org/r-data-export:latest
     restart: always
     container_name: data-export
-    mem_limit: 8g
+    mem_limit: 10g
+    cpus: 4
     environment:
       UNIVERSE_API: http://frontend:3000
-      DATA_EXPORT_WORKERS: 3
-      PRELOAD_WEBR: true
+      DATA_EXPORT_WORKERS: 4
+      DATA_EXPORT_ERROR_LOG: /app/logs/data-export-errors.jsonl
+    volumes:
+      - ./logs:/app/logs
 ```
 
 And in nginx.conf:
@@ -104,6 +111,7 @@ Or run it locally with `npm start`.
 | `DATA_EXPORT_MAX_QUEUE`     | `10`                              |
 | `DATA_EXPORT_JOB_TIMEOUT`   | `60000` (ms)                      |
 | `DATA_EXPORT_MEMORY_LIMIT`  | `2048` (MB per worker)            |
+| `DATA_EXPORT_ERROR_LOG`     | file to log failed requests (json lines) |
 | `PRELOAD_WEBR`              | start workers at boot             |
 
 If `UNIVERSE_API` contains `{universe}` it is substituted in the url. Otherwise
@@ -114,6 +122,32 @@ going through Cloudflare.
 Keep `mem_limit` above `DATA_EXPORT_WORKERS * DATA_EXPORT_MEMORY_LIMIT` (plus a
 bit for the server itself), so that the per-worker watchdog kicks in before docker
 kills the entire container.
+
+### Errors
+
+Every failed request is logged with a `stage`:
+
+ - `request`: bad url, unknown dataset, or a format that already failed in the package
+   build. These are expected, e.g. crawlers following links.
+ - `export`: passed all checks but failed while downloading or converting. These are
+   worth looking into.
+
+The most recent 1000 are available from `/errors` and `/errors?stage=export`, which
+is only reachable from inside the docker network:
+
+```sh
+docker exec data-export wget -qO- 'http://localhost:3000/errors?stage=export'
+```
+
+With `DATA_EXPORT_ERROR_LOG` all errors are also appended to a json lines file, so
+they survive restarts. It is rotated to `.1` at 50MB. For example:
+
+```sh
+jq -r 'select(.stage == "export") | [.status, .package, .dataset, .format, .message] | @tsv' logs/data-export-errors.jsonl
+```
+
+When using the handler in your own server, pass `onError(entry)` to `createHandler()`,
+for example `createErrorLog().add`.
 
 ## Options
 
@@ -130,7 +164,7 @@ kills the entire container.
 | `rVsizeMB`         | 1000     | R vector heap limit, see `?mem.maxVSize` (413) |
 | `maxJobsPerWorker` | 100      | Recycle workers after this many jobs |
 | `idleTimeout`      | 600000   | Stop idle workers after this long (0 = never) |
-| `maxInputBytes`    | 100e6    | Max size of data files in the package (413) |
+| `maxInputBytes`    | 250e6    | Max size of data files in the package (413) |
 | `maxOutputBytes`   | 200e6    | Max size of the converted output (413) |
 | `log`              | console  | Function for log messages |
 

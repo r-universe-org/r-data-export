@@ -4,8 +4,9 @@ import { extractFiles } from './extract.js';
 import { formats } from './formats.js';
 
 export { ExportPool, extractFiles, formats };
-export { createHandler } from './handler.js';
+export { createHandler, availableFormats } from './handler.js';
 export { apiLookup, fromPackageInfo, openUrlStream } from './lookup.js';
+export { createErrorLog } from './errorlog.js';
 
 // Files to extract from the installed (binary) package for this dataset
 function dataFiles(pkg, dataset, lazydata, file) {
@@ -34,8 +35,13 @@ export function createExporter(options = {}) {
     const files = dataFiles(pkg, dataset, lazydata, file);
     const release = pool.admit();
     try {
-      const stream = await getStream();
-      const buffers = await extractFiles(stream, files.map(x => `${pkg}/data/${x}`), opts.maxInputBytes);
+      const buffers = await Promise.resolve().then(getStream).then((stream) => {
+        return extractFiles(stream, files.map(x => `${pkg}/data/${x}`), opts.maxInputBytes);
+      }).catch((err) => {
+        if (err.status) throw err;
+        const status = err.name === 'TimeoutError' ? 504 : 502;
+        throw createError(status, `Failed to download ${pkg} package: ${err.message}`);
+      });
       signal?.throwIfAborted();
       return await pool.enqueue({
         files: files.map((name, i) => ({ name, data: new Uint8Array(buffers[i]) })),

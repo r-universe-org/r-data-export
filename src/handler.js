@@ -3,6 +3,22 @@ import { isbot } from 'isbot';
 import { formats } from './formats.js';
 import { openUrlStream } from './lookup.js';
 
+const tableFormats = ['csv', 'csv.gz', 'xlsx', 'ndjson'];
+
+// Formats that should work according to the metadata from the package build.
+// Datasets without this metadata are assumed to be tables.
+export function availableFormats(ds) {
+  return Object.keys(formats).filter(format => {
+    if (tableFormats.includes(format)) return ds.table !== false;
+    if (format === 'json') return ds.tojson !== false;
+    return true;
+  });
+}
+
+function logError(entry) {
+  console.log(`[R-DATA-EXPORT] ${entry.status} ${entry.universe}/${entry.package}::${entry.dataset} (${entry.format}): ${entry.message}`);
+}
+
 function sendError(res, err) {
   const status = err.status || 500;
   res.statusCode = status;
@@ -22,11 +38,23 @@ function sendError(res, err) {
  * - openStream(fileid): resolves to a readable stream of the package tarball.
  *   Defaults to downloading fileid as a url (e.g. from R2).
  * - blockBots: reject requests from crawlers and http clients like curl (see isbot).
+ * - onError(entry): called for every failed request, defaults to logging a line. The entry
+ *   has a 'stage' which is either 'request' (bad url, unknown or unsupported dataset)
+ *   or 'export' (failed while downloading or converting, these are worth looking into).
  */
-export function createHandler({ exporter, lookup, openStream = openUrlStream, blockBots = false, maxAge = 3600 }) {
+export function createHandler({ exporter, lookup, openStream = openUrlStream, blockBots = false, maxAge = 3600, onError = logError }) {
   return async function handler(req, res, next) {
+    const start = Date.now();
+    let stage = 'request';
     const fail = (err) => {
-      if (!err.status) console.log(`[R-DATA-EXPORT] ${req.url}: ${err.message}`);
+      const { universe, package: pkgname, name, format } = req.params;
+      if (err.status !== 401) {
+        onError({
+          time: new Date().toISOString(), status: err.status || 500, stage, universe,
+          package: pkgname, dataset: name, format, message: err.message, ms: Date.now() - start
+        });
+      }
+      if (!err.status) console.log(err.stack);
       if (err.headers) Object.entries(err.headers).forEach(([k, v]) => res.setHeader(k, v));
       return next ? next(err) : sendError(res, err);
     };
@@ -37,13 +65,7 @@ export function createHandler({ exporter, lookup, openStream = openUrlStream, bl
         throw createError(401, 'Bad robot! Please respect robots.txt');
       }
       const { universe, package: pkgname, name, format } = req.params;
-      if (!format) {
-        const path = (req.originalUrl || req.url).replace(/[?#].*/, '').replace(/\/$/, '');
-        res.statusCode = 302;
-        res.setHeader('Location', `${path}/csv`);
-        return res.end();
-      }
-      if (!formats[format]) {
+      if (format && !formats[format]) {
         throw createError(400, `Unsupported format: ${format}. Supported: ${Object.keys(formats).join(', ')}`);
       }
       const info = await lookup(universe, pkgname);
@@ -51,9 +73,23 @@ export function createHandler({ exporter, lookup, openStream = openUrlStream, bl
       if (!ds) {
         throw createError(404, `No data "${name}" found in ${pkgname}`);
       }
+      const available = availableFormats(ds);
+      if (!format) {
+        const path = (req.originalUrl || req.url).replace(/[?#].*/, '').replace(/\/$/, '');
+        res.statusCode = 302;
+        const preferred = ['csv', 'json', 'rda'].find(x => available.includes(x));
+        res.setHeader('Location', `${path}/${preferred}`);
+        return res.end();
+      }
+      // Don't bother R with conversions that already failed when the package was built
+      if (!available.includes(format)) {
+        const type = Array.isArray(ds.class) ? ds.class[0] : 'unknown';
+        throw createError(422, `Dataset ${pkgname}::${name} of type '${type}' cannot be exported to ${format}. Available formats: ${available.join(', ')}`);
+      }
       if (!info.fileid) {
         throw createError(404, `No binary package available for ${pkgname}`);
       }
+      stage = 'export';
       const controller = new AbortController();
       res.on('close', () => controller.abort());
       const buf = await exporter.exportDataset({
