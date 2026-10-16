@@ -40,12 +40,28 @@ as_table <- function(df){
   stop(sprintf("Cannot export object of class '%s' to a table", paste(class(df), collapse = "/")))
 }
 
-# Excel cells hold at most 32767 characters, Excel itself also truncates longer strings
-truncate_strings <- function(df, max = 32767){
+# writexl can only write character, numeric and logical columns (which includes
+# e.g. dates and factors). Convert list columns to text, e.g. "A, B, C" or json for
+# nested data, and other types (complex, raw) with as.character(). Excel cells hold
+# at most 32767 characters, Excel itself also truncates longer strings.
+xlsx_table <- function(df, max = 32767){
   df[] <- lapply(df, function(x){
+    if(is.list(x)){
+      x <- vapply(x, cell_to_string, character(1))
+    } else if(!(is.character(x) || is.integer(x) || is.double(x) || is.logical(x))){
+      x <- as.character(x)
+    }
     if(is.character(x)) substr(x, 1, max) else x
   })
   df
+}
+
+cell_to_string <- function(x){
+  if(!length(x))
+    return(NA_character_)
+  if(is.atomic(x))
+    return(paste(as.character(x), collapse = ", "))
+  as.character(jsonlite::toJSON(x, auto_unbox = TRUE, force = TRUE))
 }
 
 save_data <- function(name, env, format, output){
@@ -55,7 +71,7 @@ save_data <- function(name, env, format, output){
   switch(format,
          csv = data.table::fwrite(as_table(df), output),
          csv.gz = data.table::fwrite(as_table(df), output, compress = 'gzip'),
-         xlsx = writexl::write_xlsx(truncate_strings(as.data.frame(as_table(df))), output),
+         xlsx = writexl::write_xlsx(xlsx_table(as.data.frame(as_table(df))), output),
          json = jsonlite::write_json(df, output, force = TRUE),
          ndjson = jsonlite::stream_out(as.data.frame(as_table(df)), file(output), force = TRUE, verbose = FALSE),
          rds = saveRDS(df, output),

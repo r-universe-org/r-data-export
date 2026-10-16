@@ -312,6 +312,19 @@ test('xlsx truncates strings longer than the excel limit', async () => {
   }
 });
 
+test('xlsx converts list columns and other unsupported types to text', async () => {
+  const exporter = createExporter({ workers: 1, ...quiet });
+  try {
+    // writexl >= 2.0 errors on list, complex and raw columns
+    const out = await exporter.convert({ files: input('listcol.rda'), dataset: 'listcol', format: 'xlsx' });
+    assert.equal(out.subarray(0, 2).toString(), 'PK');
+    const json = JSON.parse(await exporter.convert({ files: input('listcol.rda'), dataset: 'listcol', format: 'json' }));
+    assert.deepEqual(json[0].films, ['A New Hope', 'Return of the Jedi'], 'other formats are unchanged');
+  } finally {
+    exporter.close();
+  }
+});
+
 test('datasets from R scripts are rejected before exporting', async () => {
   const errors = [];
   const handler = createHandler({

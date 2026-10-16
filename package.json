@@ -40,7 +40,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@r-universe/webr": "^2026.4.14",
+    "@r-universe/webr": "^2026.10.16",
     "http-errors": "^2.0.1",
     "isbot": "^5.1.32",
     "tar-stream": "^3.1.8"
