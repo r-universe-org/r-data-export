@@ -50,6 +50,7 @@ router.get('/:package/data/:name{/:format}', function(req, res, next){
 ```
 
 Errors are passed to `next()` as [http-errors](https://www.npmjs.com/package/http-errors).
+Pass `blockBots: true` to reject crawlers and clients like curl with a 401.
 
 Note that each process gets its own pool, so with `FRONTEND_WORKERS=4` and
 `workers: 2` you could get up to 8 webR processes of ~500MB-2GB each. Workers only

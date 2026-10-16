@@ -187,10 +187,25 @@ test('http handler', async () => {
     assert.equal(res.status, 404);
     res = await fetch(`${base}/testpkg/data/cars2/exe`, { headers });
     assert.equal(res.status, 400);
-    res = await fetch(`${base}/testpkg/data/cars2/csv`, { headers: { 'user-agent': 'Googlebot/2.1' } });
-    assert.equal(res.status, 401);
+    res = await fetch(`${base}/testpkg/data/cars2/csv`, { headers: { 'user-agent': 'curl/8.7.1' } });
+    assert.equal(res.status, 200);
   } finally {
     server.close();
     exporter.close();
+  }
+});
+
+test('optionally block bots', async () => {
+  const handler = createHandler({ exporter: null, lookup: null, blockBots: true });
+  const server = http.createServer((req, res) => {
+    req.params = { universe: 'test', package: 'testpkg', name: 'cars2', format: 'csv' };
+    handler(req, res);
+  });
+  await new Promise(resolve => server.listen(0, resolve));
+  try {
+    const res = await fetch(`http://localhost:${server.address().port}/`, { headers: { 'user-agent': 'curl/8.7.1' } });
+    assert.equal(res.status, 401);
+  } finally {
+    server.close();
   }
 });

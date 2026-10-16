@@ -21,8 +21,9 @@ function sendError(res, err) {
  *   where fileid identifies the binary (tar.gz) package containing the data.
  * - openStream(fileid): resolves to a readable stream of the package tarball.
  *   Defaults to downloading fileid as a url (e.g. from R2).
+ * - blockBots: reject requests from crawlers and http clients like curl (see isbot).
  */
-export function createHandler({ exporter, lookup, openStream = openUrlStream, blockBots = true, maxAge = 3600 }) {
+export function createHandler({ exporter, lookup, openStream = openUrlStream, blockBots = false, maxAge = 3600 }) {
   return async function handler(req, res, next) {
     const fail = (err) => {
       if (!err.status) console.log(`[R-DATA-EXPORT] ${req.url}: ${err.message}`);
