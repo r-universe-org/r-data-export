@@ -59,23 +59,38 @@ start when needed and stop when idle, but if that is too much, use the standalon
 
 A minimal drop-in replacement for cranlike-server that needs no database. It looks
 up package info from the frontend json api, and downloads the binary from R2.
-It serves `/:universe/:package/data/:name/:format`, which matches the current nginx
-config (`proxy_pass http://cransrv2/$universe$request_uri`), and `/status` for
-monitoring and the docker healthcheck.
+It serves `/:universe/:package/data/:name/:format` and `/status` for monitoring and
+the docker healthcheck.
 
 The docker image `ghcr.io/r-universe-org/r-data-export` is built on every push to
-main. To swap it in for cranlike-server in docker-compose:
+main. In docker-compose:
 
 ```yaml
-  cranlike2:
+  data-export:
     image: ghcr.io/r-universe-org/r-data-export:latest
     restart: always
-    container_name: cranlike2
+    container_name: data-export
     mem_limit: 8g
     environment:
       UNIVERSE_API: http://frontend:3000
       DATA_EXPORT_WORKERS: 3
       PRELOAD_WEBR: true
+```
+
+And in nginx.conf:
+
+```nginx
+upstream datasrv {
+  server data-export:3000;
+  keepalive 8;
+}
+
+location ~ ^/.*/data/ {
+  proxy_pass http://datasrv/$universe$request_uri;
+  proxy_redirect http://datasrv/$universe/ https://$http_host/;
+  proxy_redirect /$universe/ https://$http_host/;
+  ...
+}
 ```
 
 Or run it locally with `npm start`.
