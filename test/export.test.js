@@ -47,25 +47,31 @@ test('export lazydata and rda files to all formats', async () => {
   }
 });
 
-test('R errors are reported and the worker is replaced', async () => {
+test('R errors are reported and the worker is kept', async () => {
   const exporter = createExporter({ workers: 1, ...quiet });
   try {
     await assert.rejects(exporter.convert({ files: input('notdf.rda'), dataset: 'notdf', format: 'csv' }),
       { status: 422, message: /Cannot export object of class 'list'/ });
+    const pid = exporter.status().workers[0].pid;
     await assert.rejects(exporter.convert({ files: input('small.rda'), dataset: 'wrong', format: 'csv' }),
       { status: 422, message: /not found/ });
     const out = await exporter.convert({ files: input('small.rda'), dataset: 'small', format: 'csv' });
     assert.match(out.toString(), /^Sepal.Length/);
+    assert.equal(exporter.status().workers[0].pid, pid);
+    assert.equal(exporter.status().workers[0].jobs, 3);
   } finally {
     exporter.close();
   }
 });
 
-test('R vector memory limit', async () => {
+test('R vector memory limit, the worker is replaced', async () => {
   const exporter = createExporter({ workers: 1, rVsizeMB: 100, ...quiet });
   try {
     await assert.rejects(exporter.convert({ files: input('big.rda'), dataset: 'big', format: 'csv' }),
       { status: 413, message: /memory/ });
+    assert.equal(exporter.status().workers.length, 0);
+    const out = await exporter.convert({ files: input('small.rda'), dataset: 'small', format: 'csv' });
+    assert.match(out.toString(), /^Sepal.Length/);
   } finally {
     exporter.close();
   }

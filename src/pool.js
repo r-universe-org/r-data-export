@@ -76,10 +76,11 @@ class Worker {
         if (msg.type === 'result') {
           job.resolve(Buffer.from(msg.data.buffer, msg.data.byteOffset, msg.data.byteLength));
         } else {
-          // Errors are usually caused by the data, but a fresh R session is cheap insurance
+          // Regular R errors (e.g. data that is not a table) leave the session intact, and
+          // they are common, so we keep the worker. After memory errors we start fresh.
           const status = /too large|memory|cannot allocate/i.test(msg.message) ? 413 : 422;
           job.reject(createError(status, `Failed to convert ${job.label}: ${msg.message}`));
-          this.retire('conversion error');
+          if (status === 413) this.retire('memory error');
         }
         break;
       case 'memory':
