@@ -200,8 +200,13 @@ export class ExportPool {
   // Reserve a spot for a job before doing expensive preparation (downloading).
   // Admitted jobs count against the capacity until released, whether they are
   // preparing, queued or running. Throws 503 when the server is too busy.
+  // True when new jobs would be rejected
+  isFull() {
+    return this.closed || this.pending >= this.options.workers + this.options.maxQueue;
+  }
+
   admit() {
-    if (this.closed || this.pending >= this.options.workers + this.options.maxQueue) {
+    if (this.isFull()) {
       this.stats.rejected++;
       const err = createError(503, 'Data export server is too busy, please try again later');
       err.headers = { 'Retry-After': '30' };

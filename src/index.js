@@ -7,6 +7,7 @@ export { ExportPool, extractFiles, formats };
 export { createHandler, availableFormats } from './handler.js';
 export { apiLookup, fromPackageInfo, openUrlStream } from './lookup.js';
 export { createErrorLog } from './errorlog.js';
+export { cachedLookup } from './lookupcache.js';
 
 /**
  * Create a data exporter backed by a pool of webR child processes.
@@ -60,6 +61,7 @@ export function createExporter(options = {}) {
   return {
     exportDataset,
     convert: (args) => pool.convert(args),
+    isFull: () => pool.isFull(),
     prestart: () => pool.prestart(),
     status: () => pool.status(),
     close: () => pool.close(),

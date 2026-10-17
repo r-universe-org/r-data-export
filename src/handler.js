@@ -2,6 +2,7 @@ import createError from 'http-errors';
 import { isbot } from 'isbot';
 import { formats, dataFiles } from './formats.js';
 import { openUrlStream } from './lookup.js';
+import { cachedLookup } from './lookupcache.js';
 
 const tableFormats = ['csv', 'csv.gz', 'xlsx', 'ndjson'];
 
@@ -38,11 +39,16 @@ function sendError(res, err) {
  * - openStream(fileid): resolves to a readable stream of the package tarball.
  *   Defaults to downloading fileid as a url (e.g. from R2).
  * - blockBots: reject requests from crawlers and http clients like curl (see isbot).
+ * - lookupOptions: options for cachedLookup(), which caches and limits lookups to protect
+ *   the server behind it against bursts of requests (set to false to disable).
  * - onError(entry): called for every failed request, defaults to logging a line. The entry
  *   has a 'stage' which is either 'request' (bad url, unknown or unsupported dataset)
  *   or 'export' (failed while downloading or converting, these are worth looking into).
  */
-export function createHandler({ exporter, lookup, openStream = openUrlStream, blockBots = false, maxAge = 3600, onError = logError }) {
+export function createHandler({ exporter, lookup, openStream = openUrlStream, blockBots = false, maxAge = 3600, onError = logError, lookupOptions = {} }) {
+  if (lookupOptions !== false) {
+    lookup = cachedLookup(lookup, lookupOptions);
+  }
   return async function handler(req, res, next) {
     const start = Date.now();
     let stage = 'request';
@@ -67,6 +73,12 @@ export function createHandler({ exporter, lookup, openStream = openUrlStream, bl
       const { universe, package: pkgname, name, format } = req.params;
       if (format && !formats[format]) {
         throw createError(400, `Unsupported format: ${format}. Supported: ${Object.keys(formats).join(', ')}`);
+      }
+      // When we can't take new jobs, don't bother the server behind the lookup either
+      if (exporter.isFull()) {
+        const err = createError(503, 'Data export server is too busy, please try again later');
+        err.headers = { 'Retry-After': '30' };
+        throw err;
       }
       const info = await lookup(universe, pkgname);
       const ds = info.datasets.find(x => x.name === name);
