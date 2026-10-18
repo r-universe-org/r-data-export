@@ -149,6 +149,15 @@ jq -r 'select(.stage == "export") | [.status, .package, .dataset, .format, .mess
 When using the handler in your own server, pass `onError(entry)` to `createHandler()`,
 for example `createErrorLog().add`.
 
+### Caching
+
+Successful exports and errors that will not change by retrying (400 unsupported
+format, 404 unknown dataset, 413 too large, 422 cannot be converted) are sent with
+`Cache-Control: public, max-age=3600`, so a CDN like Cloudflare can absorb repeated
+requests, e.g. from crawlers. Temporary errors (500, 502, 503 when busy, 504) are
+sent with `no-store`, which matters because caches such as nginx will store any
+status that has a `max-age`.
+
 ## Options
 
 `createExporter(options)` accepts:

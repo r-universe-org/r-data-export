@@ -24,7 +24,6 @@ function sendError(res, err) {
   const status = err.status || 500;
   res.statusCode = status;
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-store');
   res.end(err.message);
 }
 
@@ -39,13 +38,16 @@ function sendError(res, err) {
  * - openStream(fileid): resolves to a readable stream of the package tarball.
  *   Defaults to downloading fileid as a url (e.g. from R2).
  * - blockBots: reject requests from crawlers and http clients like curl (see isbot).
+ * - maxAge, errorMaxAge: seconds that caches (nginx, cloudflare) may keep exports, and
+ *   errors that will not change by retrying (400, 404, 413, 422). Other errors (e.g.
+ *   503 when busy, or download errors) are never cached.
  * - lookupOptions: options for cachedLookup(), which caches and limits lookups to protect
  *   the server behind it against bursts of requests (set to false to disable).
  * - onError(entry): called for every failed request, defaults to logging a line. The entry
  *   has a 'stage' which is either 'request' (bad url, unknown or unsupported dataset)
  *   or 'export' (failed while downloading or converting, these are worth looking into).
  */
-export function createHandler({ exporter, lookup, openStream = openUrlStream, blockBots = false, maxAge = 3600, onError = logError, lookupOptions = {} }) {
+export function createHandler({ exporter, lookup, openStream = openUrlStream, blockBots = false, maxAge = 3600, errorMaxAge = 3600, onError = logError, lookupOptions = {} }) {
   if (lookupOptions !== false) {
     lookup = cachedLookup(lookup, lookupOptions);
   }
@@ -62,6 +64,11 @@ export function createHandler({ exporter, lookup, openStream = openUrlStream, bl
       }
       if (!err.status) console.log(err.stack);
       if (err.headers) Object.entries(err.headers).forEach(([k, v]) => res.setHeader(k, v));
+      // Let caches absorb repeated requests that will fail the same way, e.g. from crawlers
+      if (!res.getHeader('Cache-Control')) {
+        const cacheable = [400, 404, 413, 422].includes(err.status);
+        res.setHeader('Cache-Control', cacheable ? `public, max-age=${errorMaxAge}` : 'no-store');
+      }
       return next ? next(err) : sendError(res, err);
     };
     try {
@@ -91,6 +98,7 @@ export function createHandler({ exporter, lookup, openStream = openUrlStream, bl
         res.statusCode = 302;
         const preferred = ['csv', 'json', 'rda'].find(x => available.includes(x));
         res.setHeader('Location', `${path}/${preferred}`);
+        res.setHeader('Cache-Control', `public, max-age=${maxAge}`);
         return res.end();
       }
       // Don't bother R with conversions that already failed when the package was built

@@ -339,19 +339,23 @@ test('http handler', async () => {
       res = await fetch(`${base}/testpkg/data/${name}`, { headers, redirect: 'manual' });
       assert.equal(res.status, 302);
       assert.equal(res.headers.get('location'), `/testpkg/data/${name}/${format}`);
+      assert.equal(res.headers.get('cache-control'), 'public, max-age=3600');
     }
 
     // Formats that failed in the package build are rejected without running R
     res = await fetch(`${base}/testpkg/data/list2/csv`, { headers });
     assert.equal(res.status, 422);
+    assert.equal(res.headers.get('cache-control'), 'public, max-age=3600');
     assert.match(await res.text(), /type 'list' cannot be exported to csv. Available formats: json, rds, rda/);
     res = await fetch(`${base}/testpkg/data/model2/json`, { headers });
     assert.equal(res.status, 422);
 
     res = await fetch(`${base}/testpkg/data/nope/csv`, { headers });
     assert.equal(res.status, 404);
+    assert.equal(res.headers.get('cache-control'), 'public, max-age=3600');
     res = await fetch(`${base}/testpkg/data/cars2/exe`, { headers });
     assert.equal(res.status, 400);
+    assert.equal(res.headers.get('cache-control'), 'public, max-age=3600');
 
     // Passes the checks but fails in R
     res = await fetch(`${base}/testpkg/data/missing/csv`, { headers });
@@ -499,6 +503,7 @@ test('reject before lookup when the exporter is full', async () => {
     const res = await fetch(`http://localhost:${server.address().port}/`);
     assert.equal(res.status, 503);
     assert.equal(res.headers.get('retry-after'), '30');
+    assert.equal(res.headers.get('cache-control'), 'no-store');
     assert.equal(lookups, 0);
   } finally {
     server.close();
@@ -515,6 +520,7 @@ test('optionally block bots', async () => {
   try {
     const res = await fetch(`http://localhost:${server.address().port}/`, { headers: { 'user-agent': 'curl/8.7.1' } });
     assert.equal(res.status, 401);
+    assert.equal(res.headers.get('cache-control'), 'private');
   } finally {
     server.close();
   }
