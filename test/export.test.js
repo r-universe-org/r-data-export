@@ -6,7 +6,7 @@ import { createGzip } from 'node:zlib';
 import tar from 'tar-stream';
 import os from 'node:os';
 import path from 'node:path';
-import { createExporter, createHandler, createErrorLog, extractFiles, openUrlStream, cachedLookup } from '../src/index.js';
+import { createExporter, createHandler, createErrorLog, extractFiles, openUrlStream, cachedLookup, apiLookup } from '../src/index.js';
 
 const fixture = (name) => fs.readFileSync(new URL(`./fixtures/${name}`, import.meta.url));
 const quiet = { log: () => {} };
@@ -240,6 +240,32 @@ test('extractFiles stops downloading early without errors', async () => {
     server.closeAllConnections();
     server.close();
   }
+});
+
+test('deterministic failures are remembered, temporary ones are not', async () => {
+  const exporter = createExporter({ workers: 1, ...quiet });
+  let downloads = 0;
+  const args = (key, getStream) => ({ package: 'testpkg', dataset: 'notdf', format: 'csv', file: 'notdf.rda', key,
+    getStream: () => { downloads++; return getStream(); } });
+  try {
+    // R error: second request fails right away without downloading or converting again
+    const fails = args('abc/notdf/csv', () => tarball('testpkg', ['notdf.rda']));
+    await assert.rejects(exporter.exportDataset(fails), { status: 422 });
+    await assert.rejects(exporter.exportDataset(fails), { status: 422 });
+    assert.equal(downloads, 1);
+    assert.equal(exporter.status().completed + exporter.status().failed, 1);
+    // download error: retried
+    const flaky = args('def/notdf/csv', () => { throw new Error('connection reset'); });
+    await assert.rejects(exporter.exportDataset(flaky), { status: 502 });
+    await assert.rejects(exporter.exportDataset(flaky), { status: 502 });
+    assert.equal(downloads, 3);
+  } finally {
+    exporter.close();
+  }
+});
+
+test('lookup connection errors are reported as 502', async () => {
+  await assert.rejects(apiLookup('http://localhost:1')('test', 'testpkg'), { status: 502, message: /Failed to lookup package/ });
 });
 
 test('extractFiles limits', async () => {

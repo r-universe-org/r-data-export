@@ -50,12 +50,33 @@ export function createExporter(options = {}) {
    */
   function exportDataset(args) {
     if (!args.key) return run(args);
+    const failure = failures.get(args.key);
+    if (failure && Date.now() - failure.time < opts.failureTTL) {
+      return Promise.reject(failure.error);
+    }
     if (!inflight.has(args.key)) {
       // shared jobs should not be cancelled by a single client
-      const promise = run({ ...args, signal: undefined }).finally(() => inflight.delete(args.key));
+      const promise = run({ ...args, signal: undefined }).catch((err) => {
+        if (isDeterministic(err)) rememberFailure(args.key, err);
+        throw err;
+      }).finally(() => inflight.delete(args.key));
       inflight.set(args.key, promise);
     }
     return inflight.get(args.key);
+  }
+
+  // Conversions that failed because of the data itself (R errors, size or memory
+  // limits, timeouts) will fail again, so remember those. Not busy (503) or download
+  // errors, which are temporary. The key includes the file id of the package, so a
+  // new build of the package gets a new try.
+  const failures = new Map();
+  function isDeterministic(err) {
+    return err.status === 413 || err.status === 422 || (err.status === 504 && /^Failed to convert/.test(err.message));
+  }
+  function rememberFailure(key, error) {
+    failures.delete(key);
+    failures.set(key, { time: Date.now(), error });
+    if (failures.size > 10000) failures.delete(failures.keys().next().value);
   }
 
   return {

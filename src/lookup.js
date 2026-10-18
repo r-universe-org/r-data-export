@@ -57,7 +57,7 @@ function getJson(url, headers) {
       });
     });
     req.on('timeout', () => req.destroy(createError(504, `Timeout for: ${url}`)));
-    req.on('error', reject);
+    req.on('error', (err) => reject(err.status ? err : createError(502, `Failed to lookup package: ${err.message}`)));
   });
 }
 

@@ -18,6 +18,7 @@ export const defaults = {
   idleTimeout: 600000,     // stop idle workers after this long (0 = never)
   maxInputBytes: 250e6,    // fail when data files in the package are larger (Rdata.rdb has all datasets)
   maxOutputBytes: 200e6,   // fail conversions that produce larger output
+  failureTTL: 86400000,    // remember conversions that failed deterministically this long
   log: (msg) => console.log(`[R-DATA-EXPORT] ${msg}`)
 };
 

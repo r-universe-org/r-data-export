@@ -166,6 +166,7 @@ for example `createErrorLog().add`.
 | `idleTimeout`      | 600000   | Stop idle workers after this long (0 = never) |
 | `maxInputBytes`    | 250e6    | Max size of data files in the package (413) |
 | `maxOutputBytes`   | 200e6    | Max size of the converted output (413) |
+| `failureTTL`       | 86400000 | Remember conversions that failed because of the data (R errors, limits, timeouts) |
 | `log`              | console  | Function for log messages |
 
 The exporter object has:
