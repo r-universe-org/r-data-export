@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import { createGzip } from 'node:zlib';
 import tar from 'tar-stream';
+import createError from 'http-errors';
 import os from 'node:os';
 import path from 'node:path';
 import { createExporter, createHandler, createErrorLog, extractFiles, openUrlStream, cachedLookup, apiLookup } from '../src/index.js';
@@ -258,7 +259,7 @@ test('deterministic failures are remembered, temporary ones are not', async () =
     const flaky = args('def/notdf/csv', () => { throw new Error('connection reset'); });
     await assert.rejects(exporter.exportDataset(flaky), { status: 502 });
     await assert.rejects(exporter.exportDataset(flaky), { status: 502 });
-    assert.equal(downloads, 3);
+    assert.equal(downloads, 5); // 1 + 2 times (download + retry)
   } finally {
     exporter.close();
   }
@@ -266,6 +267,32 @@ test('deterministic failures are remembered, temporary ones are not', async () =
 
 test('lookup connection errors are reported as 502', async () => {
   await assert.rejects(apiLookup('http://localhost:1')('test', 'testpkg'), { status: 502, message: /Failed to lookup package/ });
+});
+
+test('broken downloads are retried once', async () => {
+  const exporter = createExporter({ workers: 1, ...quiet });
+  const args = { package: 'testpkg', dataset: 'small', format: 'csv', file: 'small.rda' };
+  const terminated = () => Object.assign(new TypeError('terminated'), { cause: new Error('other side closed') });
+  try {
+    // fails once, then works
+    let n = 0;
+    const out = await exporter.exportDataset({ ...args, getStream: () => { if (n++ === 0) throw terminated(); return tarball('testpkg', ['small.rda']); } });
+    assert.match(out.toString(), /^Sepal.Length/);
+    assert.equal(n, 2);
+    // keeps failing: one retry, then 502 including the cause
+    n = 0;
+    await assert.rejects(exporter.exportDataset({ ...args, getStream: () => { n++; throw terminated(); } }),
+      { status: 502, message: /terminated \(other side closed\)/ });
+    assert.equal(n, 2);
+    // http errors and timeouts are not retried
+    n = 0;
+    await assert.rejects(exporter.exportDataset({ ...args, getStream: () => { n++; throw createError(404, 'gone'); } }), { status: 404 });
+    const timeout = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+    await assert.rejects(exporter.exportDataset({ ...args, getStream: () => { n++; throw timeout; } }), { status: 504 });
+    assert.equal(n, 2); // one call each
+  } finally {
+    exporter.close();
+  }
 });
 
 test('extractFiles limits', async () => {

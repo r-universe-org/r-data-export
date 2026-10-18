@@ -9,6 +9,12 @@ export { apiLookup, fromPackageInfo, openUrlStream } from './lookup.js';
 export { createErrorLog } from './errorlog.js';
 export { cachedLookup } from './lookupcache.js';
 
+// undici (fetch) puts the actual reason in err.cause, e.g. 'terminated' (other side closed)
+function errorMessage(err) {
+  const cause = err.cause && (err.cause.message || err.cause.code);
+  return cause ? `${err.message} (${cause})` : err.message;
+}
+
 /**
  * Create a data exporter backed by a pool of webR child processes.
  * See pool.js for all options.
@@ -25,12 +31,20 @@ export function createExporter(options = {}) {
     const files = dataFiles(pkg, dataset, lazydata, file);
     const release = pool.admit();
     try {
-      const buffers = await Promise.resolve().then(getStream).then((stream) => {
+      const download = () => Promise.resolve().then(getStream).then((stream) => {
         return extractFiles(stream, files.map(x => `${pkg}/data/${x}`), opts.maxInputBytes);
+      });
+      // A broken connection is worth one more try: with HTTP/2 (node 26) all downloads
+      // share one connection, and when it gets closed they all fail with 'terminated'.
+      // Not for http errors (e.g. 404, too large) or timeouts.
+      const buffers = await download().catch((err) => {
+        if (err.status || err.name === 'TimeoutError') throw err;
+        opts.log(`retrying download of ${pkg} after: ${errorMessage(err)}`);
+        return download();
       }).catch((err) => {
         if (err.status) throw err;
         const status = err.name === 'TimeoutError' ? 504 : 502;
-        throw createError(status, `Failed to download ${pkg} package: ${err.message}`);
+        throw createError(status, `Failed to download ${pkg} package: ${errorMessage(err)}`);
       });
       signal?.throwIfAborted();
       return await pool.enqueue({
