@@ -9,7 +9,7 @@ export { apiLookup, fromPackageInfo, openUrlStream } from './lookup.js';
 export { createErrorLog } from './errorlog.js';
 export { cachedLookup } from './lookupcache.js';
 
-// undici (fetch) puts the actual reason in err.cause, e.g. 'terminated' (other side closed)
+// undici puts the actual reason in err.cause, e.g. 'terminated' (other side closed)
 function errorMessage(err) {
   const cause = err.cause && (err.cause.message || err.cause.code);
   return cause ? `${err.message} (${cause})` : err.message;
@@ -34,9 +34,8 @@ export function createExporter(options = {}) {
       const download = () => Promise.resolve().then(getStream).then((stream) => {
         return extractFiles(stream, files.map(x => `${pkg}/data/${x}`), opts.maxInputBytes);
       });
-      // A broken connection is worth one more try: with HTTP/2 (node 26) all downloads
-      // share one connection, and when it gets closed they all fail with 'terminated'.
-      // Not for http errors (e.g. 404, too large) or timeouts.
+      // A broken connection is worth one more try, e.g. when the server closed a
+      // keep-alive connection. Not for http errors (e.g. 404, too large) or timeouts.
       const buffers = await download().catch((err) => {
         if (err.status || err.name === 'TimeoutError') throw err;
         opts.log(`retrying download of ${pkg} after: ${errorMessage(err)}`);

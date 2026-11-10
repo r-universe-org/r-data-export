@@ -201,12 +201,18 @@ test('download errors are reported as 502/504', async () => {
   }
 });
 
-test('openUrlStream downloads, follows redirects, and times out', async () => {
+test('openUrlStream downloads, follows redirects, and times out on stalls', async () => {
   const body = Buffer.alloc(1e6, 'x');
   const server = http.createServer((req, res) => {
     if (req.url === '/file') return res.end(body);
     if (req.url === '/redirect') { res.statusCode = 302; res.setHeader('Location', '/file'); return res.end(); }
     if (req.url === '/stall') { res.write('partial'); return; } // never ends
+    if (req.url === '/hang') return; // never responds
+    if (req.url === '/slow') { // 5 bytes in 500ms
+      let n = 0;
+      const timer = setInterval(() => { res.write('x'); if (++n === 5) { clearInterval(timer); res.end(); } }, 100);
+      return;
+    }
     res.statusCode = 404; res.end();
   });
   await new Promise(resolve => server.listen(0, resolve));
@@ -217,6 +223,10 @@ test('openUrlStream downloads, follows redirects, and times out', async () => {
     assert.equal((await read(await openUrlStream(`${base}/redirect`))).length, 1e6);
     await assert.rejects(openUrlStream(`${base}/missing`), { status: 502, message: /HTTP 404/ });
     await assert.rejects(read(await openUrlStream(`${base}/stall`, { timeout: 200 })), { name: 'TimeoutError' });
+    await assert.rejects(openUrlStream(`${base}/hang`, { timeout: 200 }), { name: 'TimeoutError' });
+    // Slow downloads are fine, as long as data keeps coming
+    const slow = await openUrlStream(`${base}/slow`, { timeout: 200 });
+    assert.equal((await read(slow)).length, 5);
   } finally {
     server.closeAllConnections();
     server.close();

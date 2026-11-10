@@ -1,15 +1,36 @@
 import http from 'node:http';
 import https from 'node:https';
-import { Readable } from 'node:stream';
+import { request, Agent, interceptors } from 'undici';
 import createError from 'http-errors';
 
-// The timeout includes reading the body, it is only there to catch stalled downloads
-export async function openUrlStream(url, { timeout = 120000 } = {}) {
-  const res = await fetch(url, { signal: AbortSignal.timeout(timeout) });
-  if (!res.ok) {
-    throw createError(502, `HTTP ${res.status} for: ${url}`);
+// No HTTP/2 (the default of fetch in node 26): all downloads share one connection, and
+// when that session dies every download stalls until it times out. This blocked nearly
+// all exports for hours on 2026-11-10. Same as express-frontend, see
+// https://github.com/nodejs/undici/pull/5740
+const dispatcher = new Agent({ allowH2: false }).compose(interceptors.redirect({ maxRedirections: 5 }));
+
+// Rather than limiting the total time (large packages are fine as long as data keeps
+// coming), give up when the server does not respond, or the body stalls, for 'timeout' ms.
+// R2 normally responds in <100ms, so 15s without any data means the download is stuck.
+export async function openUrlStream(url, { timeout = 15000 } = {}) {
+  const { statusCode, body } = await request(url, {
+    dispatcher, headersTimeout: timeout, bodyTimeout: timeout
+  }).catch((err) => { throw markTimeout(err); });
+  if (statusCode < 200 || statusCode >= 300) {
+    body.dump().catch(() => {}); // free the connection
+    throw createError(502, `HTTP ${statusCode} for: ${url}`);
   }
-  return Readable.fromWeb(res.body);
+  // A stalled body is raised as an error on the stream, while extracting
+  return body.on('error', markTimeout);
+}
+
+// Name undici timeouts TimeoutError, like AbortSignal.timeout() does, so that they
+// get a 504 and are not retried (see createExporter)
+function markTimeout(err) {
+  if (['UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT'].includes(err.code)) {
+    err.name = 'TimeoutError';
+  }
+  return err;
 }
 
 // Linux binaries are preferred because they are tar.gz and built most frequently
